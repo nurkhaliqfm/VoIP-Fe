@@ -53,7 +53,7 @@ function App() {
 	);
 	const [callMessage, setCallMessage] = useState<string | null>(null);
 	const [connectionStatus, setConnectionStatus] = useState("Not connected");
-	const [isMicrophoneMuted, setIsMicrophoneMuted] = useState(false);
+	const [isMicrophoneMuted, setIsMicrophoneMuted] = useState(true);
 	const [callingData, setCallingData] = useState<{
 		to: string;
 		type: string;
@@ -204,6 +204,8 @@ function App() {
 				peerSocketIdRef.current = from.socket_id;
 				setCallStatus(status);
 				setCallMessage(message);
+
+				console.log("Call initiated from:", from, "to :", to);
 				setCallingData({ to: to.socket_id, from: from.socket_id, type: type });
 			}
 		);
@@ -215,6 +217,7 @@ function App() {
 				setCallStatus(null);
 				setCallMessage(message);
 				setCallingData(null);
+				window.location.reload();
 			}
 		);
 
@@ -225,6 +228,19 @@ function App() {
 				setCallStatus(null);
 				setCallMessage(message);
 				setCallingData(null);
+				window.location.reload();
+			}
+		);
+
+		socketConnection.on(
+			"call:end",
+			async ({ from }: { from: SocketData; message: string }) => {
+				console.log("Call ended by:", from);
+				peerSocketIdRef.current = from.socket_id;
+				setCallStatus(null);
+				setCallMessage(null);
+				setCallingData(null);
+				window.location.reload();
 			}
 		);
 
@@ -234,14 +250,16 @@ function App() {
 				from,
 				to,
 				offer,
+				type,
 				status,
 			}: {
 				from: SocketData;
 				to: SocketData;
 				status: string;
+				type: string;
 				offer: RTCSessionDescriptionInit;
 			}) => {
-				peerSocketIdRef.current = to.socket_id;
+				peerSocketIdRef.current = from.socket_id;
 
 				try {
 					const stream = await navigator.mediaDevices.getUserMedia({
@@ -262,6 +280,13 @@ function App() {
 					socketConnection.emit("call:answer", { to: from.socket_id, answer });
 					setCallStatus(status);
 					setCallMessage(null);
+
+					console.log("Call initiated from:", from, "to :", to);
+					setCallingData({
+						to: to.socket_id,
+						from: from.socket_id,
+						type: type,
+					});
 				} catch (error) {
 					console.error("Error handling incoming call:", error);
 					setCallStatus("Call failed");
@@ -339,6 +364,27 @@ function App() {
 		}
 	}, [socket]);
 
+	const initiateCall = ({
+		to,
+		type,
+		name,
+	}: {
+		to: string;
+		type: string;
+		name: string;
+	}) => {
+		if (socket) {
+			socket.emit("call:initiate", {
+				to,
+				type,
+			});
+		}
+
+		setCallMessage("Calling " + name + "...");
+		setCallStatus("calling");
+		setCallingData({ to: to, type: type, from: getFromLocalStorage()!.user });
+	};
+
 	const acceptCall = async () => {
 		if (!socket || !pcRef.current || callingData === null) return;
 
@@ -372,27 +418,6 @@ function App() {
 		}
 	};
 
-	const initiateCall = ({
-		to,
-		type,
-		name,
-	}: {
-		to: string;
-		type: string;
-		name: string;
-	}) => {
-		if (socket) {
-			socket.emit("call:initiate", {
-				to,
-				type,
-			});
-		}
-
-		setCallMessage("Calling " + name + "...");
-		setCallStatus("calling");
-		setCallingData({ to: to, type: type, from: getFromLocalStorage()!.user });
-	};
-
 	const rejectCall = () => {
 		if (socket && peerSocketIdRef.current) {
 			socket.emit("call:reject", {
@@ -403,10 +428,12 @@ function App() {
 		resetCallingState();
 		setCallStatus(null);
 		setCallMessage(null);
+		window.location.reload();
 	};
 
 	const stopCalling = () => {
 		if (socket && callingData) {
+			console.log("Stopping call to:", callingData);
 			socket.emit("call:stop", {
 				to: callingData.to,
 				type: callingData.type,
@@ -416,6 +443,22 @@ function App() {
 		resetCallingState();
 		setCallStatus(null);
 		setCallMessage(null);
+		window.location.reload();
+	};
+
+	const endCalling = () => {
+		if (socket && callingData) {
+			console.log("Ending call to:", callingData);
+			socket.emit("call:end", {
+				to: callingData.from,
+				type: callingData.type,
+			});
+		}
+
+		resetCallingState();
+		setCallStatus(null);
+		setCallMessage(null);
+		window.location.reload();
 	};
 
 	return (
@@ -586,7 +629,7 @@ function App() {
 								autoPlay
 								muted={isMicrophoneMuted}
 								controls
-								className=""></audio>
+								className="hidden"></audio>
 
 							{callStatus === "offer" ? (
 								<div className="flex mt-4 gap-x-4">
@@ -608,7 +651,7 @@ function App() {
 									</div>
 									<button
 										className="rounded-full bg-red-600 text-white p-3 cursor-pointer "
-										// onClick={endCall}
+										onClick={endCalling}
 										disabled={callStatus !== "offer"}>
 										<TbPhoneEnd />
 									</button>
