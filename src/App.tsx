@@ -4,8 +4,14 @@ import "./App.css";
 import axios from "axios";
 import { MdBedroomChild } from "react-icons/md";
 import { BsPersonBadge } from "react-icons/bs";
-import { FaMicrophone, FaMicrophoneSlash, FaPhone } from "react-icons/fa6";
+import { FaPhone } from "react-icons/fa6";
 import { TbPhoneEnd } from "react-icons/tb";
+import {
+	PiMicrophoneFill,
+	PiMicrophoneSlashFill,
+	PiPhoneIncomingFill,
+	PiPhoneSlashFill,
+} from "react-icons/pi";
 
 type Room = {
 	id: number;
@@ -24,14 +30,35 @@ type Receptionist = {
 	updatedAt: string;
 };
 
+type CallbackResponse = {
+	name: string;
+	status: string;
+	message: string;
+	socket?: { id: string; user: string; type: "guest" | "receptionist" };
+};
+
+type SocketData = {
+	socket_id: string;
+	user: string;
+	type: "guest" | "receptionist";
+};
+
 const API_BASE_URL = "https://89qrngt0-3005.asse.devtunnels.ms";
 // const API_BASE_URL = "http://localhost:3005";
 
 function App() {
 	const [socket, setSocket] = useState<Socket | null>(null);
-	const [callStatus, setCallStatus] = useState("Ready");
+	const [callStatus, setCallStatus] = useState<"" | "offer" | string | null>(
+		null
+	);
+	const [callMessage, setCallMessage] = useState<string | null>(null);
 	const [connectionStatus, setConnectionStatus] = useState("Not connected");
 	const [isMicrophoneMuted, setIsMicrophoneMuted] = useState(false);
+	const [callingData, setCallingData] = useState<{
+		to: string;
+		type: string;
+		from: string;
+	} | null>(null);
 
 	const [rooms, setRooms] = useState<Room[]>([]);
 	const [receptionists, setReceptionists] = useState<Receptionist[]>([]);
@@ -46,30 +73,17 @@ function App() {
 		async (name: string, type: "guest" | "receptionist") => {
 			if (!socket) return;
 
-			socket.emit(
-				"register",
-				name,
-				type,
-				(callback: {
-					success: boolean;
-					message: string;
-					socket: {
-						id: string;
-						user: string;
-						type: "guest" | "receptionist";
-					};
-				}) => {
-					if (callback.success) {
-						saveToLocalStorage({
-							id: callback.socket.id,
-							user: callback.socket.user,
-							type: callback.socket.type,
-						});
-					} else {
-						console.error("Registration failed:", callback.message);
-					}
+			socket.emit("register", name, type, (callback: CallbackResponse) => {
+				if (callback.status === "REGISTERED" && callback.socket) {
+					saveToLocalStorage({
+						id: callback.socket.id,
+						user: callback.socket.user,
+						type: callback.socket.type,
+					});
+				} else {
+					console.error("Registration failed:", callback.message);
 				}
-			);
+			});
 		},
 		[socket]
 	);
@@ -141,8 +155,6 @@ function App() {
 		const socketConnection = io(API_BASE_URL);
 		setSocket(socketConnection);
 
-		console.log("Connecting to signaling server...", socketConnection);
-
 		// Initialize WebRTC peer connection
 		const pc = new RTCPeerConnection({
 			iceServers: [],
@@ -158,7 +170,7 @@ function App() {
 
 		pc.onicecandidate = (event) => {
 			if (event.candidate && peerSocketIdRef.current) {
-				socketConnection.emit("iceCandidate", {
+				socketConnection.emit("call:candidate", {
 					to: peerSocketIdRef.current,
 					candidate: event.candidate,
 				});
@@ -174,44 +186,100 @@ function App() {
 			setConnectionStatus("Disconnected");
 		});
 
-		socketConnection.on("incomingCall", async ({ from, offer }) => {
-			peerSocketIdRef.current = from;
-			setCallStatus("Incoming call...");
-
-			try {
-				const stream = await navigator.mediaDevices.getUserMedia({
-					audio: true,
-				});
-				localStreamRef.current = stream;
-
-				if (localAudioRef.current) {
-					localAudioRef.current.srcObject = stream;
-				}
-
-				stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-
-				await pc.setRemoteDescription(offer);
-				const answer = await pc.createAnswer();
-				await pc.setLocalDescription(answer);
-				socketConnection.emit("answer", { to: from, answer });
-
-				setCallStatus("In Call");
-			} catch (error) {
-				console.error("Error handling incoming call:", error);
-				setCallStatus("Call failed");
+		socketConnection.on(
+			"call:initiate",
+			async ({
+				from,
+				to,
+				message,
+				type,
+				status,
+			}: {
+				from: SocketData;
+				to: SocketData;
+				type: string;
+				message: string;
+				status: string;
+			}) => {
+				peerSocketIdRef.current = from.socket_id;
+				setCallStatus(status);
+				setCallMessage(message);
+				setCallingData({ to: to.socket_id, from: from.socket_id, type: type });
 			}
-		});
+		);
 
-		socketConnection.on("callAnswered", async ({ answer }) => {
+		socketConnection.on(
+			"call:reject",
+			async ({ from, message }: { from: SocketData; message: string }) => {
+				peerSocketIdRef.current = from.socket_id;
+				setCallStatus(null);
+				setCallMessage(message);
+				setCallingData(null);
+			}
+		);
+
+		socketConnection.on(
+			"call:stop",
+			async ({ from, message }: { from: SocketData; message: string }) => {
+				peerSocketIdRef.current = from.socket_id;
+				setCallStatus(null);
+				setCallMessage(message);
+				setCallingData(null);
+			}
+		);
+
+		socketConnection.on(
+			"call:offer",
+			async ({
+				from,
+				to,
+				offer,
+				status,
+			}: {
+				from: SocketData;
+				to: SocketData;
+				status: string;
+				offer: RTCSessionDescriptionInit;
+			}) => {
+				peerSocketIdRef.current = to.socket_id;
+
+				try {
+					const stream = await navigator.mediaDevices.getUserMedia({
+						audio: true,
+					});
+					localStreamRef.current = stream;
+
+					if (localAudioRef.current) {
+						localAudioRef.current.srcObject = stream;
+					}
+
+					stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+					await pc.setRemoteDescription(offer);
+					const answer = await pc.createAnswer();
+					await pc.setLocalDescription(answer);
+
+					socketConnection.emit("call:answer", { to: from.socket_id, answer });
+					setCallStatus(status);
+					setCallMessage(null);
+				} catch (error) {
+					console.error("Error handling incoming call:", error);
+					setCallStatus("Call failed");
+				}
+			}
+		);
+
+		socketConnection.on("call:answer", async ({ answer, status }) => {
 			try {
 				await pc.setRemoteDescription(answer);
-				setCallStatus("In Call");
+				setCallStatus(status);
+				setCallMessage(null);
 			} catch (error) {
 				console.error("Error handling call answer:", error);
 			}
 		});
 
-		socketConnection.on("iceCandidate", async ({ candidate }) => {
+		socketConnection.on("call:candidate", async ({ candidate }) => {
 			try {
 				if (candidate) await pc.addIceCandidate(candidate);
 			} catch (error) {
@@ -229,47 +297,7 @@ function App() {
 		};
 	}, []);
 
-	const startCall = async ({
-		from,
-		from_type,
-		to,
-		to_type,
-	}: {
-		from: string;
-		from_type: string;
-		to: string;
-		to_type: string;
-	}) => {
-		if (!socket || !pcRef.current) return;
-
-		try {
-			setCallStatus("Starting call...");
-
-			const stream = await navigator.mediaDevices.getUserMedia({
-				audio: true,
-			});
-			localStreamRef.current = stream;
-
-			if (localAudioRef.current) {
-				localAudioRef.current.srcObject = stream;
-			}
-
-			stream
-				.getTracks()
-				.forEach((track) => pcRef.current!.addTrack(track, stream));
-
-			const offer = await pcRef.current.createOffer();
-			await pcRef.current.setLocalDescription(offer);
-
-			socket.emit("call", { from, from_type, to, to_type, offer });
-			setCallStatus("Calling " + to + "...");
-		} catch (error) {
-			console.error("Error starting call:", error);
-			setCallStatus("Call failed");
-		}
-	};
-
-	const endCall = () => {
+	const resetCallingState = useCallback(() => {
 		if (pcRef.current) {
 			pcRef.current.close();
 
@@ -288,7 +316,7 @@ function App() {
 
 			pc.onicecandidate = (event) => {
 				if (event.candidate && peerSocketIdRef.current && socket) {
-					socket.emit("iceCandidate", {
+					socket.emit("call:candidate", {
 						to: peerSocketIdRef.current,
 						candidate: event.candidate,
 					});
@@ -302,7 +330,6 @@ function App() {
 		}
 
 		peerSocketIdRef.current = null;
-		setCallStatus("Ready");
 
 		if (localAudioRef.current) {
 			localAudioRef.current.srcObject = null;
@@ -310,6 +337,85 @@ function App() {
 		if (remoteAudioRef.current) {
 			remoteAudioRef.current.srcObject = null;
 		}
+	}, [socket]);
+
+	const acceptCall = async () => {
+		if (!socket || !pcRef.current || callingData === null) return;
+
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({
+				audio: true,
+			});
+			localStreamRef.current = stream;
+
+			if (localAudioRef.current) {
+				localAudioRef.current.srcObject = stream;
+			}
+
+			stream
+				.getTracks()
+				.forEach((track) => pcRef.current!.addTrack(track, stream));
+
+			const offer = await pcRef.current.createOffer();
+			await pcRef.current.setLocalDescription(offer);
+
+			socket.emit("call:offer", {
+				to: callingData.from,
+				offer,
+			});
+			setCallMessage(null);
+			setCallStatus("offer");
+		} catch (error) {
+			console.error("Error starting call:", error);
+			setCallMessage("Call failed");
+			setCallStatus("");
+		}
+	};
+
+	const initiateCall = ({
+		to,
+		type,
+		name,
+	}: {
+		to: string;
+		type: string;
+		name: string;
+	}) => {
+		if (socket) {
+			socket.emit("call:initiate", {
+				to,
+				type,
+			});
+		}
+
+		setCallMessage("Calling " + name + "...");
+		setCallStatus("calling");
+		setCallingData({ to: to, type: type, from: getFromLocalStorage()!.user });
+	};
+
+	const rejectCall = () => {
+		if (socket && peerSocketIdRef.current) {
+			socket.emit("call:reject", {
+				to: peerSocketIdRef.current,
+			});
+		}
+
+		resetCallingState();
+		setCallStatus(null);
+		setCallMessage(null);
+	};
+
+	const stopCalling = () => {
+		if (socket && callingData) {
+			socket.emit("call:stop", {
+				to: callingData.to,
+				type: callingData.type,
+			});
+		}
+
+		resetCallingState();
+		setCallStatus(null);
+		setCallMessage(null);
 	};
 
 	return (
@@ -386,7 +492,7 @@ function App() {
 			)}
 
 			<div className="call-section">
-				{getFromLocalStorage() !== null && callStatus !== "In Call" && (
+				{getFromLocalStorage() !== null && callStatus !== "answer" && (
 					<>
 						<h2 className="mb-2">Available Calls:</h2>
 						<div className="gap-2 flex flex-col items-center justify-center">
@@ -398,11 +504,10 @@ function App() {
 												key={receptionist.slug}
 												className={`btn btn-xm w-fit btn-primary`}
 												onClick={() =>
-													startCall({
-														from: getFromLocalStorage()!.user,
-														from_type: "guest",
+													initiateCall({
 														to: receptionist.slug,
-														to_type: "receptionist",
+														type: "receptionist",
+														name: receptionist.name,
 													})
 												}>
 												<FaPhone /> {receptionist.name}
@@ -426,11 +531,10 @@ function App() {
 														: "btn-warning"
 												}`}
 												onClick={() =>
-													startCall({
-														from: getFromLocalStorage()!.user,
-														from_type: "receptionist",
+													initiateCall({
 														to: room.slug,
-														to_type: "guest",
+														type: "guest",
+														name: room.name,
 													})
 												}>
 												<FaPhone size={18} /> {room.name}
@@ -444,36 +548,88 @@ function App() {
 				)}
 
 				<div className="call-status mt-4 flex flex-col gap-4 items-center justify-center">
-					<div className="bg-green-600 rounded-2xl text-white px-4 py-2 flex flex-col min-w-24">
-						<span className="text-xs text-start font-light">Status :</span>
-						<p className="font-semibold text-start">{callStatus}</p>
+					<div className="flex flex-col">
+						{callMessage !== null && (
+							<div className="bg-green-600 rounded-2xl px-3 py-1">
+								<p className="font-semibold text-center">{callMessage}</p>
+							</div>
+						)}
+						<div className="flex justify-center items-center mt-4">
+							{callStatus === "calling" ? (
+								<button
+									className="rounded-full bg-red-600 text-white p-3 cursor-pointer "
+									onClick={() => stopCalling()}
+									title="Stop Calling">
+									<PiPhoneSlashFill />
+								</button>
+							) : callStatus === "initiate" ? (
+								<div className="flex mt-4 gap-x-4">
+									<button
+										className="rounded-full bg-green-600 text-white p-3 cursor-pointer "
+										onClick={acceptCall}
+										title="Accept Call">
+										<PiPhoneIncomingFill />
+									</button>
+									<button
+										className="rounded-full bg-red-600 text-white p-3 cursor-pointer "
+										onClick={rejectCall}
+										title="Reject Call">
+										<PiPhoneSlashFill />
+									</button>
+								</div>
+							) : null}
+						</div>
+
 						<div className="flex flex-col items-center gap-2">
 							<audio
 								ref={remoteAudioRef}
 								autoPlay
 								muted={isMicrophoneMuted}
-								className="hidden"></audio>
+								controls
+								className=""></audio>
 
-							{callStatus === "In Call" && (
+							{callStatus === "offer" ? (
 								<div className="flex mt-4 gap-x-4">
-									<div className="rounded-full bg-white text-black p-3 cursor-pointer">
+									<div
+										className={`rounded-full p-3 cursor-pointer ${
+											isMicrophoneMuted
+												? "bg-gray-800 text-white"
+												: "bg-white text-gray-800"
+										}`}>
 										{isMicrophoneMuted ? (
-											<FaMicrophoneSlash
+											<PiMicrophoneSlashFill
 												onClick={() => setIsMicrophoneMuted(false)}
 											/>
 										) : (
-											<FaMicrophone
+											<PiMicrophoneFill
 												onClick={() => setIsMicrophoneMuted(true)}
 											/>
 										)}
 									</div>
 									<button
 										className="rounded-full bg-red-600 text-white p-3 cursor-pointer "
-										onClick={endCall}
-										disabled={callStatus !== "In Call"}>
+										// onClick={endCall}
+										disabled={callStatus !== "offer"}>
 										<TbPhoneEnd />
 									</button>
 								</div>
+							) : (
+								callStatus === "answer" && (
+									<div className="flex mt-4 gap-x-4">
+										<button
+											className="rounded-full bg-green-600 text-white p-3 cursor-pointer "
+											onClick={acceptCall}
+											title="Accept Call">
+											<PiPhoneIncomingFill />
+										</button>
+										<button
+											className="rounded-full bg-red-600 text-white p-3 cursor-pointer "
+											onClick={rejectCall}
+											title="Reject Call">
+											<PiPhoneSlashFill />
+										</button>
+									</div>
+								)
 							)}
 						</div>
 					</div>
