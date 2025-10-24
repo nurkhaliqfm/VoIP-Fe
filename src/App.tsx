@@ -53,7 +53,7 @@ function App() {
 	);
 	const [callMessage, setCallMessage] = useState<string | null>(null);
 	const [connectionStatus, setConnectionStatus] = useState("Not connected");
-	const [isMicrophoneMuted, setIsMicrophoneMuted] = useState(true);
+	const [isMicrophoneMuted, setIsMicrophoneMuted] = useState(false);
 	const [callingData, setCallingData] = useState<{
 		to: string;
 		type: string;
@@ -88,7 +88,6 @@ function App() {
 		[socket]
 	);
 
-	// LocalStorage helpers
 	const saveToLocalStorage = (socketData: {
 		id: string;
 		user: string;
@@ -151,17 +150,14 @@ function App() {
 	}, []);
 
 	useEffect(() => {
-		// Initialize Socket.IO connection
 		const socketConnection = io(API_BASE_URL);
 		setSocket(socketConnection);
 
-		// Initialize WebRTC peer connection
 		const pc = new RTCPeerConnection({
 			iceServers: [],
 		});
 		pcRef.current = pc;
 
-		// WebRTC event handlers
 		pc.ontrack = (event) => {
 			if (remoteAudioRef.current) {
 				remoteAudioRef.current.srcObject = event.streams[0];
@@ -177,7 +173,6 @@ function App() {
 			}
 		};
 
-		// Socket event handlers
 		socketConnection.on("connect", () => {
 			setConnectionStatus("Connected");
 		});
@@ -312,7 +307,6 @@ function App() {
 			}
 		});
 
-		// Cleanup on unmount
 		return () => {
 			socketConnection.disconnect();
 			pc.close();
@@ -326,13 +320,11 @@ function App() {
 		if (pcRef.current) {
 			pcRef.current.close();
 
-			// Reinitialize peer connection
 			const pc = new RTCPeerConnection({
 				iceServers: [],
 			});
 			pcRef.current = pc;
 
-			// Re-setup event handlers
 			pc.ontrack = (event) => {
 				if (remoteAudioRef.current) {
 					remoteAudioRef.current.srcObject = event.streams[0];
